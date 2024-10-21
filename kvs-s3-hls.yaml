@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  KinesisVideoStream:
+    Type: AWS::KinesisVideo::Stream
+    Properties:
+      Name: MyKinesisHLSStream
+      DataRetentionInHours: 24
+      MediaType: video/mp4
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "KinesisS3AccessPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: arn:aws:s3:::codelegs
+              - Effect: Allow
+                Action:
+                  - kinesisvideo:PutMedia
+                Resource: !GetAtt KinesisVideoStream.Arn
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "StreamVideoFromS3"
+      Handler: "index.handler"
+      Runtime: "python3.x"
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          KINESIS_STREAM_NAME: !Ref KinesisVideoStream
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+
+          def handler(event, context):
+              s3 = boto3.client('s3')
+              kinesis = boto3.client('kinesisvideo')
+
+              # Get data endpoint for Kinesis
+              stream_name = event['KINESIS_STREAM_NAME']
+              video_file = event['VIDEO_FILE']
+              bucket_name = event['BUCKET_NAME']
+
+              response = kinesis.get_data_endpoint(
+                  APIName='PUT_MEDIA',
+                  StreamName=stream_name
+              )
+              endpoint = response['DataEndpoint']
+
+              media_client = boto3.client('kinesis-video-media', endpoint_url=endpoint)
+
+              # Stream the video file from S3 to Kinesis Video Stream
+              with s3.get_object(Bucket=bucket_name, Key=video_file)['Body'] as video:
+                  media_client.put_media(
+                      StreamName=stream_name,
+                      Payload=video
+                  )
+              return {"status": "success"}
+
+Outputs:
+  KinesisStreamName:
+    Description: "Kinesis Video Stream name"
+    Value: !Ref KinesisVideoStream
